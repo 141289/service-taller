@@ -1,7 +1,7 @@
 import re
 import cv2
 import numpy as np
-import easyocr
+import pytesseract
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,11 +14,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-reader = easyocr.Reader(['es'], gpu=False)
-
 @app.get("/")
 def inicio():
-    return {"mensaje": "Servidor OCR de Mecánica Don Oscar activo"}
+    return {"status": "ok", "mensaje": "Servidor OCR de Mecánica Don Oscar activo"}
 
 @app.post("/api/v1/ocr-patente")
 async def procesar_patente(file: UploadFile = File(...)):
@@ -29,14 +27,21 @@ async def procesar_patente(file: UploadFile = File(...)):
     if img is None:
         raise HTTPException(status_code=400, detail="No se pudo procesar la imagen.")
 
+    # Procesamiento liviano de imagen
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    gray = cv2.bilateralFilter(gray, 11, 17, 17)
+    
+    # Lectura OCR ligera
+    config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    texto = pytesseract.image_to_string(gray, config=config)
 
-    resultados = reader.readtext(blurred)
+    # Limpieza de caracteres para formato de patente argentina
+    clean = re.sub(r'[^A-Z0-9]', '', texto.upper())
 
-    for (_, texto, probabilidad) in resultados:
-        clean = re.sub(r'[^A-Z0-9]', '', texto.upper())
-        if 6 <= len(clean) <= 7 and probabilidad > 0.35:
-            return {"status": "success", "patente": clean, "confianza": round(probabilidad * 100, 2)}
+    # Buscar coincidencia de patente formato nuevo (AA123BB) o formato viejo (AAA123)
+    match = re.search(r'([A-Z]{2}\d{3}[A-Z]{2}|[A-Z]{3}\d{3})', clean)
 
-    return {"status": "warning", "message": "No se detectó patente con claridad", "patente": None}
+    if match:
+        return {"status": "success", "patente": match.group(1)}
+    
+    return {"status": "warning", "message": "No se detectó la patente claramente", "patente": clean[:7] if len(clean)>=6 else None}
